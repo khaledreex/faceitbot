@@ -86,7 +86,7 @@ class FaceitView(discord.ui.View):
 
         message = f"{role.mention if role else '@faceit'} need {needed} more player(s)"
 
-        await interaction.response.send_message("Done", ephemeral=True)
+        # await interaction.response.send_message("Done", ephemeral=True)
 
         await text_channel.send(
             message,
