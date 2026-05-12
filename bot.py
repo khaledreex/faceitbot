@@ -88,7 +88,10 @@ class FaceitView(discord.ui.View):
 
         # await interaction.response.send_message("Done", ephemeral=True)
 
-        # await text_channel.send(message,allowed_mentions=discord.AllowedMentions(roles=True))
+        await text_channel.send(
+            message,
+            allowed_mentions=discord.AllowedMentions(roles=True)
+        )
 
 
 # =========================
