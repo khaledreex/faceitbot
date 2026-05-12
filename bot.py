@@ -18,10 +18,7 @@ intents = discord.Intents.default()
 intents.voice_states = True
 intents.guilds = True
 
-bot = commands.Bot(
-    command_prefix="!",
-    intents=intents
-)
+client = discord.Client(intents=intents)
 
 # Store voice clients
 voice_clients = {}
