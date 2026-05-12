@@ -1,12 +1,9 @@
-import os
 import discord
+import os
 from discord.ext import commands
 
-# =========================
-# CONFIG
-# =========================
+TOKEN = os.getenv("TOKEN")
 
-TOKEN = "MTUwMzc0OTUwMDI2NTY5MzI3NA.GDXIXA.ZYSxEYlEKhPuI4sJ7lMXCdfSGqmbqQYokFnk7Y"
 
 VOICE_CHANNEL_ID = 1434700693175931020
 TEXT_CHANNEL_ID = 384391311941435396
@@ -22,24 +19,23 @@ intents = discord.Intents.default()
 intents.voice_states = True
 intents.guilds = True
 
-# =========================
-# BOT
-# =========================
-
 bot = commands.Bot(
     command_prefix="!",
     intents=intents
 )
 
+# Store voice clients
+voice_clients = {}
+
 # Prevent duplicate embeds
 embed_sent = set()
+
 
 # =========================
 # BUTTON VIEW
 # =========================
 
 class FaceitView(discord.ui.View):
-
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -61,7 +57,10 @@ class FaceitView(discord.ui.View):
         text_channel = guild.get_channel(TEXT_CHANNEL_ID)
 
         if not voice_channel or not text_channel:
-            await interaction.response.defer()
+            await interaction.response.send_message(
+                "Channels not found.",
+                ephemeral=True
+            )
             return
 
         # Ignore bots
@@ -73,9 +72,11 @@ class FaceitView(discord.ui.View):
         current_count = len(real_members)
         needed = TARGET_PLAYERS - current_count
 
-        # Already full
         if needed <= 0:
-            await interaction.response.defer()
+            await interaction.response.send_message(
+                "5 stack is already full.",
+                ephemeral=True
+            )
             return
 
         role = discord.utils.get(
@@ -92,8 +93,8 @@ class FaceitView(discord.ui.View):
                 f"Need {needed} more player(s)"
             )
 
-        # Silent button response
         await interaction.response.defer()
+
 
 # =========================
 # READY
@@ -106,6 +107,7 @@ async def on_ready():
 
     # Persistent buttons
     bot.add_view(FaceitView())
+
 
 # =========================
 # CONNECT TO VC
@@ -124,16 +126,18 @@ async def ensure_voice_connected(guild):
     # Already connected
     if existing_vc:
 
-        # Move if somehow wrong VC
+        # Move if wrong VC
         if existing_vc.channel.id != VOICE_CHANNEL_ID:
             await existing_vc.move_to(voice_channel)
 
+        voice_clients[guild.id] = existing_vc
         return
 
     try:
 
-        # Connect bot
-        await voice_channel.connect()
+        vc = await voice_channel.connect()
+
+        voice_clients[guild.id] = vc
 
         # Send embed once per session
         if guild.id not in embed_sent and text_channel:
@@ -157,6 +161,7 @@ async def ensure_voice_connected(guild):
     except Exception as e:
         print(f"Voice connect error: {e}")
 
+
 # =========================
 # DISCONNECT IF EMPTY
 # =========================
@@ -173,7 +178,7 @@ async def disconnect_if_empty(guild):
         if not member.bot
     ]
 
-    # Empty VC
+    # Disconnect only if empty
     if len(real_members) == 0:
 
         vc = guild.voice_client
@@ -184,13 +189,16 @@ async def disconnect_if_empty(guild):
 
                 await vc.disconnect()
 
-                # Allow new embed next session
+                # Allow new embed next time
                 embed_sent.discard(guild.id)
 
                 print("Disconnected because VC is empty.")
 
             except Exception as e:
                 print(f"Disconnect error: {e}")
+
+            voice_clients.pop(guild.id, None)
+
 
 # =========================
 # VOICE EVENTS
@@ -205,13 +213,14 @@ async def on_voice_state_update(member, before, after):
 
     guild = member.guild
 
-    # Joined target VC
+    # User joined target VC
     if after.channel and after.channel.id == VOICE_CHANNEL_ID:
         await ensure_voice_connected(guild)
 
-    # Left target VC
+    # User left target VC
     if before.channel and before.channel.id == VOICE_CHANNEL_ID:
         await disconnect_if_empty(guild)
+
 
 # =========================
 # START
