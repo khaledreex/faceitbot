@@ -6,7 +6,7 @@ from discord.ext import commands
 # CONFIG
 # =========================
 
-TOKEN = os.getenv("TOKEN")
+TOKEN = "MTUwMzc0OTUwMDI2NTY5MzI3NA.GDXIXA.ZYSxEYlEKhPuI4sJ7lMXCdfSGqmbqQYokFnk7Y"
 
 VOICE_CHANNEL_ID = 1434700693175931020
 TEXT_CHANNEL_ID = 384391311941435396
