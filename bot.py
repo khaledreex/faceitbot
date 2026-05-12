@@ -1,6 +1,10 @@
+import os
 import discord
 from discord.ext import commands
-import os
+
+# =========================
+# CONFIG
+# =========================
 
 TOKEN = os.getenv("TOKEN")
 
@@ -18,20 +22,24 @@ intents = discord.Intents.default()
 intents.voice_states = True
 intents.guilds = True
 
-client = discord.Client(intents=intents)
+# =========================
+# BOT
+# =========================
 
-# Store voice clients
-voice_clients = {}
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents
+)
 
 # Prevent duplicate embeds
 embed_sent = set()
-
 
 # =========================
 # BUTTON VIEW
 # =========================
 
 class FaceitView(discord.ui.View):
+
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -53,10 +61,7 @@ class FaceitView(discord.ui.View):
         text_channel = guild.get_channel(TEXT_CHANNEL_ID)
 
         if not voice_channel or not text_channel:
-            await interaction.response.send_message(
-                "Channels not found.",
-                ephemeral=True
-            )
+            await interaction.response.defer()
             return
 
         # Ignore bots
@@ -68,11 +73,9 @@ class FaceitView(discord.ui.View):
         current_count = len(real_members)
         needed = TARGET_PLAYERS - current_count
 
+        # Already full
         if needed <= 0:
-            await interaction.response.send_message(
-                "Already 5 Stack.",
-                ephemeral=True
-            )
+            await interaction.response.defer()
             return
 
         role = discord.utils.get(
@@ -89,8 +92,8 @@ class FaceitView(discord.ui.View):
                 f"Need {needed} more player(s)"
             )
 
+        # Silent button response
         await interaction.response.defer()
-
 
 # =========================
 # READY
@@ -103,7 +106,6 @@ async def on_ready():
 
     # Persistent buttons
     bot.add_view(FaceitView())
-
 
 # =========================
 # CONNECT TO VC
@@ -122,18 +124,16 @@ async def ensure_voice_connected(guild):
     # Already connected
     if existing_vc:
 
-        # Move if wrong VC
+        # Move if somehow wrong VC
         if existing_vc.channel.id != VOICE_CHANNEL_ID:
             await existing_vc.move_to(voice_channel)
 
-        voice_clients[guild.id] = existing_vc
         return
 
     try:
 
-        vc = await voice_channel.connect()
-
-        voice_clients[guild.id] = vc
+        # Connect bot
+        await voice_channel.connect()
 
         # Send embed once per session
         if guild.id not in embed_sent and text_channel:
@@ -157,7 +157,6 @@ async def ensure_voice_connected(guild):
     except Exception as e:
         print(f"Voice connect error: {e}")
 
-
 # =========================
 # DISCONNECT IF EMPTY
 # =========================
@@ -174,7 +173,7 @@ async def disconnect_if_empty(guild):
         if not member.bot
     ]
 
-    # Disconnect only if empty
+    # Empty VC
     if len(real_members) == 0:
 
         vc = guild.voice_client
@@ -185,16 +184,13 @@ async def disconnect_if_empty(guild):
 
                 await vc.disconnect()
 
-                # Allow new embed next time
+                # Allow new embed next session
                 embed_sent.discard(guild.id)
 
                 print("Disconnected because VC is empty.")
 
             except Exception as e:
                 print(f"Disconnect error: {e}")
-
-            voice_clients.pop(guild.id, None)
-
 
 # =========================
 # VOICE EVENTS
@@ -209,14 +205,13 @@ async def on_voice_state_update(member, before, after):
 
     guild = member.guild
 
-    # User joined target VC
+    # Joined target VC
     if after.channel and after.channel.id == VOICE_CHANNEL_ID:
         await ensure_voice_connected(guild)
 
-    # User left target VC
+    # Left target VC
     if before.channel and before.channel.id == VOICE_CHANNEL_ID:
         await disconnect_if_empty(guild)
-
 
 # =========================
 # START
