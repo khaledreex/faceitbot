@@ -79,21 +79,19 @@ class FaceitView(discord.ui.View):
             )
             return
 
-        role = discord.utils.get(
-            guild.roles,
-            name=ROLE_NAME
+        role = discord.utils.find(
+            lambda r: r.name.lower() == ROLE_NAME.lower(),
+            guild.roles
         )
 
-        if role:
-            await text_channel.send(
-                f"{role.mention} need {needed} more player(s)"
-            )
-        else:
-            await text_channel.send(
-                f"Need {needed} more player(s)"
-            )
+        message = f"{role.mention if role else '@faceit'} need {needed} more player(s)"
 
-        await interaction.response.defer()
+        await interaction.response.send_message("Done", ephemeral=True)
+
+        await text_channel.send(
+            message,
+            allowed_mentions=discord.AllowedMentions(roles=True)
+        )
 
 
 # =========================
