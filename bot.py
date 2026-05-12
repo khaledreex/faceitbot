@@ -1,7 +1,8 @@
 import discord
 from discord.ext import commands
+import os
 
-TOKEN = "MTUwMzc0OTUwMDI2NTY5MzI3NA.GDXIXA.ZYSxEYlEKhPuI4sJ7lMXCdfSGqmbqQYokFnk7Y"
+TOKEN = os.getenv("TOKEN")
 
 VOICE_CHANNEL_ID = 1434700693175931020
 TEXT_CHANNEL_ID = 384391311941435396
