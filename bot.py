@@ -4,6 +4,7 @@ import re
 import time
 import asyncio
 import audioop
+import ctypes.util
 import speech_recognition as sr
 
 from collections import defaultdict
@@ -23,7 +24,6 @@ VOICE_COMMAND_COOLDOWN = 10
 VOICE_CHUNK_SECONDS = 3.0
 
 DEBUG_AUDIO_PACKETS = True
-DEBUG_TRANSCRIPTION = True
 
 
 recognizer = sr.Recognizer()
@@ -31,6 +31,42 @@ recognizer = sr.Recognizer()
 voice_clients = {}
 embed_sent = set()
 last_voice_command = {}
+
+
+# =========================
+# OPUS LOADER
+# =========================
+
+def load_opus_library():
+    """
+    Required for decoding Discord voice audio into PCM.
+
+    On Railway, make sure this variable exists:
+    RAILPACK_DEPLOY_APT_PACKAGES=libopus0
+    """
+
+    if discord.opus.is_loaded():
+        print("[OPUS] Already loaded.")
+        return True
+
+    opus_path = ctypes.util.find_library("opus")
+
+    print(f"[OPUS] ctypes found opus: {opus_path}")
+
+    if opus_path:
+        try:
+            discord.opus.load_opus(opus_path)
+        except Exception as e:
+            print(f"[OPUS] load_opus error: {e}")
+
+    if discord.opus.is_loaded():
+        print("[OPUS] Loaded successfully.")
+        return True
+
+    print("[OPUS] Failed to load.")
+    print("[OPUS] On Railway, add: RAILPACK_DEPLOY_APT_PACKAGES=libopus0")
+
+    return False
 
 
 # =========================
@@ -66,14 +102,16 @@ NUMBER_WORDS = {
 
 def parse_faceit_voice_command(text: str):
     """
-    Accepted command meaning:
+    Accepted command:
 
     Hey faceit, we need 3 more
 
-    This still keeps the command strict, but allows common speech-to-text variants:
-    - hey / hay
-    - faceit / face it / facet / facit
-    - 1-5 only
+    It also accepts common speech-to-text variants:
+    - hay faceit we need 3 more
+    - hey face it we need three more
+    - hey facet we need 2 more
+
+    It only accepts numbers from 1 to 5.
     """
 
     original_text = text
@@ -112,6 +150,7 @@ def parse_faceit_voice_command(text: str):
         return None
 
     print(f"[PARSER] Accepted command. Needed = {needed}")
+
     return needed
 
 
@@ -132,10 +171,10 @@ async def send_faceit_message(guild, needed=None):
         return False, "Text channel not found."
 
     # Button mode:
-    # needed=None means calculate from current VC count.
+    # If needed is None, calculate from current VC count.
     #
     # Voice command mode:
-    # needed is provided, so we trust the spoken number.
+    # If needed is provided, trust the spoken number.
     if needed is None:
         real_members = [
             member for member in voice_channel.members
@@ -344,7 +383,7 @@ class FaceitVoiceSink(voice_recv.AudioSink):
         now = time.monotonic()
 
         if DEBUG_AUDIO_PACKETS:
-            # Log packets max once per second per user so Railway logs do not explode.
+            # Log max once per second per user so Railway logs do not explode.
             if now - self.last_packet_log_time[user.id] > 1:
                 print(
                     f"[SINK] AUDIO PACKET from {user} | "
@@ -403,6 +442,14 @@ class FaceitVoiceSink(voice_recv.AudioSink):
 
 def start_voice_listener(guild, vc):
     print(f"[LISTENER] Trying to start listener in guild={guild.name}")
+
+    if not discord.opus.is_loaded():
+        print("[LISTENER] Opus is not loaded. Trying to load now...")
+        load_opus_library()
+
+    if not discord.opus.is_loaded():
+        print("[LISTENER] Cannot start listener because Opus is still not loaded.")
+        return
 
     if not hasattr(vc, "listen"):
         print("[LISTENER] Voice client does not support receiving audio.")
@@ -479,6 +526,10 @@ async def ensure_voice_connected(guild):
         return
 
     print(f"[VOICE] Target voice channel found: {voice_channel.name}")
+
+    if not discord.opus.is_loaded():
+        print("[VOICE] Opus is not loaded before voice connect. Trying to load now...")
+        load_opus_library()
 
     existing_vc = guild.voice_client
 
@@ -605,9 +656,10 @@ async def on_ready():
     print(f"[READY] Logged in as {bot.user}")
     print(f"[READY] Guild count: {len(bot.guilds)}")
 
+    load_opus_library()
+
     bot.add_view(FaceitView())
 
-    # Important:
     # If Railway restarts while people are already in the VC,
     # on_voice_state_update will not fire.
     # This checks the VC on startup and connects if real users are already there.
@@ -670,5 +722,8 @@ async def on_voice_state_update(member, before, after):
 
 if not TOKEN:
     raise RuntimeError("TOKEN environment variable is missing.")
+
+# Try loading Opus before the bot even connects.
+load_opus_library()
 
 bot.run(TOKEN)
