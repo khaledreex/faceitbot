@@ -13,7 +13,6 @@ from discord.ext import commands, voice_recv
 
 TOKEN = os.getenv("TOKEN")
 
-
 VOICE_CHANNEL_ID = 1434700693175931020
 TEXT_CHANNEL_ID = 384391311941435396
 
@@ -32,19 +31,15 @@ voice_clients = {}
 embed_sent = set()
 last_voice_command = {}
 
+connecting_guilds = set()
+ready_ran = False
+
 
 # =========================
 # OPUS LOADER
 # =========================
 
 def load_opus_library():
-    """
-    Required for decoding Discord voice audio into PCM.
-
-    On Railway, make sure this variable exists:
-    RAILPACK_DEPLOY_APT_PACKAGES=libopus0
-    """
-
     if discord.opus.is_loaded():
         print("[OPUS] Already loaded.")
         return True
@@ -65,7 +60,6 @@ def load_opus_library():
 
     print("[OPUS] Failed to load.")
     print("[OPUS] On Railway, add: RAILPACK_DEPLOY_APT_PACKAGES=libopus0")
-
     return False
 
 
@@ -101,19 +95,6 @@ NUMBER_WORDS = {
 
 
 def parse_faceit_voice_command(text: str):
-    """
-    Accepted command:
-
-    Hey faceit, we need 3 more
-
-    It also accepts common speech-to-text variants:
-    - hay faceit we need 3 more
-    - hey face it we need three more
-    - hey facet we need 2 more
-
-    It only accepts numbers from 1 to 5.
-    """
-
     original_text = text
 
     text = text.lower().strip()
@@ -170,11 +151,6 @@ async def send_faceit_message(guild, needed=None):
         print("[SEND] Text channel not found.")
         return False, "Text channel not found."
 
-    # Button mode:
-    # If needed is None, calculate from current VC count.
-    #
-    # Voice command mode:
-    # If needed is provided, trust the spoken number.
     if needed is None:
         real_members = [
             member for member in voice_channel.members
@@ -224,20 +200,9 @@ async def send_faceit_message(guild, needed=None):
 # =========================
 
 def transcribe_pcm_chunk(pcm_bytes: bytes):
-    """
-    Discord decoded PCM is usually:
-    - 48kHz
-    - signed 16-bit
-    - stereo
-
-    SpeechRecognition works best with mono audio, so we convert:
-    stereo 48kHz -> mono 16kHz
-    """
-
     print(f"[STT] Transcribing chunk. PCM bytes = {len(pcm_bytes)}")
 
     try:
-        # Stereo to mono
         mono = audioop.tomono(
             pcm_bytes,
             2,
@@ -245,7 +210,6 @@ def transcribe_pcm_chunk(pcm_bytes: bytes):
             0.5
         )
 
-        # 48kHz to 16kHz
         mono_16k, _ = audioop.ratecv(
             mono,
             2,
@@ -361,7 +325,6 @@ class FaceitVoiceSink(voice_recv.AudioSink):
         )
 
     def wants_opus(self):
-        # False = decoded PCM audio.
         return False
 
     def write(self, user, data: voice_recv.VoiceData):
@@ -383,7 +346,6 @@ class FaceitVoiceSink(voice_recv.AudioSink):
         now = time.monotonic()
 
         if DEBUG_AUDIO_PACKETS:
-            # Log max once per second per user so Railway logs do not explode.
             if now - self.last_packet_log_time[user.id] > 1:
                 print(
                     f"[SINK] AUDIO PACKET from {user} | "
@@ -398,7 +360,6 @@ class FaceitVoiceSink(voice_recv.AudioSink):
         if len(user_buffer) < self.target_bytes:
             return
 
-        # Avoid sending chunks from the same user too aggressively.
         if now - self.last_process_time[user.id] < 1.5:
             return
 
@@ -406,7 +367,6 @@ class FaceitVoiceSink(voice_recv.AudioSink):
 
         pcm_chunk = bytes(user_buffer[:self.target_bytes])
 
-        # Keep overlap so the phrase is less likely to be cut.
         del user_buffer[:self.target_bytes // 2]
 
         print(
@@ -460,10 +420,7 @@ def start_voice_listener(guild, vc):
         print("[LISTENER] Voice listener already running.")
         return
 
-    sink = FaceitVoiceSink(
-        bot,
-        guild.id
-    )
+    sink = FaceitVoiceSink(bot, guild.id)
 
     vc.listen(
         sink,
@@ -516,68 +473,65 @@ class FaceitView(discord.ui.View):
 # =========================
 
 async def ensure_voice_connected(guild):
-    print(f"[VOICE] ensure_voice_connected called for guild={guild.name}")
-
-    voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
-    text_channel = guild.get_channel(TEXT_CHANNEL_ID)
-
-    if not voice_channel:
-        print(f"[VOICE] Voice channel not found: {VOICE_CHANNEL_ID}")
+    if guild.id in connecting_guilds:
+        print("[VOICE] Already connecting. Skipping duplicate connect.")
         return
 
-    print(f"[VOICE] Target voice channel found: {voice_channel.name}")
-
-    if not discord.opus.is_loaded():
-        print("[VOICE] Opus is not loaded before voice connect. Trying to load now...")
-        load_opus_library()
-
-    existing_vc = guild.voice_client
-
-    # If already connected with normal discord.py VoiceClient,
-    # it cannot receive audio. Reconnect with VoiceRecvClient.
-    if existing_vc and not hasattr(existing_vc, "listen"):
-        print("[VOICE] Existing voice client cannot receive audio.")
-        print("[VOICE] Disconnecting and reconnecting with VoiceRecvClient...")
-
-        try:
-            await existing_vc.disconnect(force=True)
-        except Exception as e:
-            print(f"[VOICE] Force disconnect error: {e}")
-
-        voice_clients.pop(guild.id, None)
-        existing_vc = None
-
-    if existing_vc:
-        print("[VOICE] Bot already connected to voice.")
-
-        if existing_vc.channel.id != VOICE_CHANNEL_ID:
-            print("[VOICE] Moving bot to target voice channel...")
-            await existing_vc.move_to(voice_channel)
-
-        voice_clients[guild.id] = existing_vc
-
-        start_voice_listener(
-            guild,
-            existing_vc
-        )
-
-        return
+    connecting_guilds.add(guild.id)
 
     try:
+        print(f"[VOICE] ensure_voice_connected called for guild={guild.name}")
+
+        voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
+        text_channel = guild.get_channel(TEXT_CHANNEL_ID)
+
+        if not voice_channel:
+            print(f"[VOICE] Voice channel not found: {VOICE_CHANNEL_ID}")
+            return
+
+        print(f"[VOICE] Target voice channel found: {voice_channel.name}")
+
+        if not discord.opus.is_loaded():
+            print("[VOICE] Opus is not loaded before voice connect. Trying to load now...")
+            load_opus_library()
+
+        existing_vc = guild.voice_client
+
+        if existing_vc and existing_vc.is_connected():
+            print("[VOICE] Bot already connected.")
+
+            if existing_vc.channel.id != VOICE_CHANNEL_ID:
+                print("[VOICE] Moving bot to target voice channel...")
+                await existing_vc.move_to(voice_channel)
+
+            voice_clients[guild.id] = existing_vc
+
+            start_voice_listener(guild, existing_vc)
+            return
+
+        if existing_vc:
+            print("[VOICE] Cleaning broken voice client...")
+
+            try:
+                await existing_vc.disconnect(force=True)
+            except Exception as e:
+                print(f"[VOICE] Cleanup disconnect error: {e}")
+
+            voice_clients.pop(guild.id, None)
+
         print("[VOICE] Connecting with VoiceRecvClient...")
 
         vc = await voice_channel.connect(
-            cls=voice_recv.VoiceRecvClient
+            cls=voice_recv.VoiceRecvClient,
+            timeout=30,
+            reconnect=True
         )
 
         voice_clients[guild.id] = vc
 
         print("[VOICE] Connected to voice.")
 
-        start_voice_listener(
-            guild,
-            vc
-        )
+        start_voice_listener(guild, vc)
 
         if guild.id not in embed_sent and text_channel:
             embed = discord.Embed(
@@ -599,11 +553,11 @@ async def ensure_voice_connected(guild):
 
             print("[VOICE] Sent Faceit Queue embed.")
 
-    except discord.ClientException as e:
-        print(f"[VOICE] Discord client voice error: {e}")
-
     except Exception as e:
-        print(f"[VOICE] Voice connect error: {e}")
+        print(f"[VOICE] Voice connect error: {repr(e)}")
+
+    finally:
+        connecting_guilds.discard(guild.id)
 
 
 # =========================
@@ -653,6 +607,14 @@ async def disconnect_if_empty(guild):
 
 @bot.event
 async def on_ready():
+    global ready_ran
+
+    if ready_ran:
+        print("[READY] on_ready already ran. Skipping duplicate startup connect.")
+        return
+
+    ready_ran = True
+
     print(f"[READY] Logged in as {bot.user}")
     print(f"[READY] Guild count: {len(bot.guilds)}")
 
@@ -660,9 +622,8 @@ async def on_ready():
 
     bot.add_view(FaceitView())
 
-    # If Railway restarts while people are already in the VC,
-    # on_voice_state_update will not fire.
-    # This checks the VC on startup and connects if real users are already there.
+    await asyncio.sleep(3)
+
     for guild in bot.guilds:
         voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
 
@@ -705,12 +666,10 @@ async def on_voice_state_update(member, before, after):
         f"before={before_id} | after={after_id}"
     )
 
-    # User joined target VC
     if after.channel and after.channel.id == VOICE_CHANNEL_ID:
         print("[VOICE_STATE] User joined target VC.")
         await ensure_voice_connected(guild)
 
-    # User left target VC
     if before.channel and before.channel.id == VOICE_CHANNEL_ID:
         print("[VOICE_STATE] User left target VC.")
         await disconnect_if_empty(guild)
@@ -723,7 +682,6 @@ async def on_voice_state_update(member, before, after):
 if not TOKEN:
     raise RuntimeError("TOKEN environment variable is missing.")
 
-# Try loading Opus before the bot even connects.
 load_opus_library()
 
 bot.run(TOKEN)
