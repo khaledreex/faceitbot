@@ -22,16 +22,14 @@ ROLE_NAME = "faceit"
 VOICE_COMMAND_COOLDOWN = 10
 VOICE_CHUNK_SECONDS = 3.0
 
+DEBUG_AUDIO_PACKETS = True
+DEBUG_TRANSCRIPTION = True
+
 
 recognizer = sr.Recognizer()
 
-# Store voice clients
 voice_clients = {}
-
-# Prevent duplicate embeds
 embed_sent = set()
-
-# Prevent voice command spam
 last_voice_command = {}
 
 
@@ -68,41 +66,37 @@ NUMBER_WORDS = {
 
 def parse_faceit_voice_command(text: str):
     """
-    Only accepts this command style:
+    Accepted command meaning:
 
     Hey faceit, we need 3 more
 
-    Valid:
-    - hey faceit we need 1 more
-    - hey faceit we need 2 more
-    - hey faceit we need three more
-    - hey faceit we need five more
-
-    Invalid:
-    - yo faceit need 3 more
-    - faceit need 3 more
-    - hey faceit need 3 more
-    - hey faceit we need 6 more
+    This still keeps the command strict, but allows common speech-to-text variants:
+    - hey / hay
+    - faceit / face it / facet / facit
+    - 1-5 only
     """
 
-    text = text.lower().strip()
+    original_text = text
 
-    # Normalize common punctuation/spaces from speech recognition
+    text = text.lower().strip()
     text = text.replace(",", " ")
     text = text.replace(".", " ")
     text = text.replace("!", " ")
     text = text.replace("?", " ")
     text = re.sub(r"\s+", " ", text)
 
+    print(f"[PARSER] Normalized text: {text}")
+
     match = re.fullmatch(
-        r"hey\s+faceit\s+we\s+need\s+(\d+|one|two|to|too|three|tree|four|for|five)\s+more",
+        r"(hey|hay)\s+(faceit|face it|facet|facit)\s+we\s+need\s+(\d+|one|two|to|too|three|tree|four|for|five)\s+more",
         text
     )
 
     if not match:
+        print(f"[PARSER] Rejected text: {original_text}")
         return None
 
-    raw_number = match.group(1)
+    raw_number = match.group(3)
 
     if raw_number.isdigit():
         needed = int(raw_number)
@@ -110,12 +104,14 @@ def parse_faceit_voice_command(text: str):
         needed = NUMBER_WORDS.get(raw_number)
 
     if needed is None:
+        print("[PARSER] Rejected: could not parse number.")
         return None
 
-    # Maximum is 5
     if needed < 1 or needed > 5:
+        print(f"[PARSER] Rejected: number outside 1-5: {needed}")
         return None
 
+    print(f"[PARSER] Accepted command. Needed = {needed}")
     return needed
 
 
@@ -127,14 +123,19 @@ async def send_faceit_message(guild, needed=None):
     voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
     text_channel = guild.get_channel(TEXT_CHANNEL_ID)
 
-    if not voice_channel or not text_channel:
-        return False, "Channels not found."
+    if not voice_channel:
+        print("[SEND] Voice channel not found.")
+        return False, "Voice channel not found."
+
+    if not text_channel:
+        print("[SEND] Text channel not found.")
+        return False, "Text channel not found."
 
     # Button mode:
-    # If needed is None, calculate from current VC members.
+    # needed=None means calculate from current VC count.
     #
     # Voice command mode:
-    # If needed is provided, trust the spoken number.
+    # needed is provided, so we trust the spoken number.
     if needed is None:
         real_members = [
             member for member in voice_channel.members
@@ -144,10 +145,17 @@ async def send_faceit_message(guild, needed=None):
         current_count = len(real_members)
         needed = TARGET_PLAYERS - current_count
 
+        print(f"[SEND] Button mode. Current count = {current_count}, needed = {needed}")
+
+    else:
+        print(f"[SEND] Voice mode. Spoken needed = {needed}")
+
     if needed <= 0:
+        print("[SEND] Ignored: 5 stack already full.")
         return False, "5 stack is already full."
 
     if needed > TARGET_PLAYERS:
+        print(f"[SEND] Ignored: needed > {TARGET_PLAYERS}")
         return False, f"Cannot need more than {TARGET_PLAYERS} players."
 
     role = discord.utils.find(
@@ -155,12 +163,19 @@ async def send_faceit_message(guild, needed=None):
         guild.roles
     )
 
+    if role:
+        print(f"[SEND] Found role: {role.name} / {role.id}")
+    else:
+        print("[SEND] Role not found. Falling back to plain @faceit text.")
+
     message = f"{role.mention if role else '@faceit'} need {needed} more player(s)"
 
     await text_channel.send(
         message,
         allowed_mentions=discord.AllowedMentions(roles=True)
     )
+
+    print(f"[SEND] Sent message: {message}")
 
     return True, message
 
@@ -176,12 +191,14 @@ def transcribe_pcm_chunk(pcm_bytes: bytes):
     - signed 16-bit
     - stereo
 
-    SpeechRecognition wants mono audio, so we convert:
+    SpeechRecognition works best with mono audio, so we convert:
     stereo 48kHz -> mono 16kHz
     """
 
+    print(f"[STT] Transcribing chunk. PCM bytes = {len(pcm_bytes)}")
+
     try:
-        # Convert stereo to mono
+        # Stereo to mono
         mono = audioop.tomono(
             pcm_bytes,
             2,
@@ -189,7 +206,7 @@ def transcribe_pcm_chunk(pcm_bytes: bytes):
             0.5
         )
 
-        # Convert 48kHz to 16kHz
+        # 48kHz to 16kHz
         mono_16k, _ = audioop.ratecv(
             mono,
             2,
@@ -206,21 +223,27 @@ def transcribe_pcm_chunk(pcm_bytes: bytes):
         )
 
         text = recognizer.recognize_google(audio)
+
+        print(f"[STT] Result: {text}")
+
         return text
 
     except sr.UnknownValueError:
+        print("[STT] Could not understand audio.")
         return ""
 
     except sr.RequestError as e:
-        print(f"Speech recognition request error: {e}")
+        print(f"[STT] Speech recognition request error: {e}")
         return ""
 
     except Exception as e:
-        print(f"Speech recognition error: {e}")
+        print(f"[STT] Speech recognition error: {e}")
         return ""
 
 
 async def handle_transcribed_audio(guild_id, user_id, pcm_bytes):
+    print(f"[HANDLE] Received chunk for guild={guild_id}, user={user_id}")
+
     loop = asyncio.get_running_loop()
 
     text = await loop.run_in_executor(
@@ -230,20 +253,22 @@ async def handle_transcribed_audio(guild_id, user_id, pcm_bytes):
     )
 
     if not text:
+        print("[HANDLE] No transcription text returned.")
         return
 
-    print(f"Voice heard: {text}")
+    print(f"[HANDLE] Voice heard: {text}")
 
     needed = parse_faceit_voice_command(text)
 
     if needed is None:
+        print("[HANDLE] No valid Faceit command found.")
         return
 
     now = time.monotonic()
     key = (guild_id, user_id)
 
     if now - last_voice_command.get(key, 0) < VOICE_COMMAND_COOLDOWN:
-        print("Ignored duplicate voice command due to cooldown.")
+        print("[HANDLE] Ignored duplicate voice command due to cooldown.")
         return
 
     last_voice_command[key] = now
@@ -251,6 +276,7 @@ async def handle_transcribed_audio(guild_id, user_id, pcm_bytes):
     guild = bot.get_guild(guild_id)
 
     if not guild:
+        print("[HANDLE] Guild not found.")
         return
 
     sent, result = await send_faceit_message(
@@ -259,9 +285,9 @@ async def handle_transcribed_audio(guild_id, user_id, pcm_bytes):
     )
 
     if sent:
-        print(f"Voice command sent message: {result}")
+        print(f"[HANDLE] Voice command sent message: {result}")
     else:
-        print(f"Voice command ignored: {result}")
+        print(f"[HANDLE] Voice command ignored: {result}")
 
 
 # =========================
@@ -277,6 +303,7 @@ class FaceitVoiceSink(voice_recv.AudioSink):
 
         self.buffers = defaultdict(bytearray)
         self.last_process_time = defaultdict(float)
+        self.last_packet_log_time = defaultdict(float)
 
         self.sample_rate = 48000
         self.channels = 2
@@ -289,19 +316,42 @@ class FaceitVoiceSink(voice_recv.AudioSink):
             VOICE_CHUNK_SECONDS
         )
 
+        print(
+            f"[SINK] Created. target_bytes={self.target_bytes}, "
+            f"chunk_seconds={VOICE_CHUNK_SECONDS}"
+        )
+
     def wants_opus(self):
-        # False means we want decoded PCM audio.
+        # False = decoded PCM audio.
         return False
 
     def write(self, user, data: voice_recv.VoiceData):
         if user is None:
+            print("[SINK] Got packet with no user.")
             return
 
         if getattr(user, "bot", False):
             return
 
-        if not data.pcm:
+        if not data:
+            print(f"[SINK] No data from user={user}")
             return
+
+        if not data.pcm:
+            print(f"[SINK] No PCM data from user={user}")
+            return
+
+        now = time.monotonic()
+
+        if DEBUG_AUDIO_PACKETS:
+            # Log packets max once per second per user so Railway logs do not explode.
+            if now - self.last_packet_log_time[user.id] > 1:
+                print(
+                    f"[SINK] AUDIO PACKET from {user} | "
+                    f"pcm bytes={len(data.pcm)} | "
+                    f"buffer before={len(self.buffers[user.id])}"
+                )
+                self.last_packet_log_time[user.id] = now
 
         user_buffer = self.buffers[user.id]
         user_buffer.extend(data.pcm)
@@ -309,9 +359,7 @@ class FaceitVoiceSink(voice_recv.AudioSink):
         if len(user_buffer) < self.target_bytes:
             return
 
-        now = time.monotonic()
-
-        # Avoid sending chunks from the same user too aggressively
+        # Avoid sending chunks from the same user too aggressively.
         if now - self.last_process_time[user.id] < 1.5:
             return
 
@@ -319,10 +367,15 @@ class FaceitVoiceSink(voice_recv.AudioSink):
 
         pcm_chunk = bytes(user_buffer[:self.target_bytes])
 
-        # Keep some overlap so the command is less likely to be cut off
+        # Keep overlap so the phrase is less likely to be cut.
         del user_buffer[:self.target_bytes // 2]
 
-        asyncio.run_coroutine_threadsafe(
+        print(
+            f"[SINK] Sending chunk to STT for user={user}. "
+            f"chunk bytes={len(pcm_chunk)}, remaining buffer={len(user_buffer)}"
+        )
+
+        future = asyncio.run_coroutine_threadsafe(
             handle_transcribed_audio(
                 self.guild_id,
                 user.id,
@@ -331,16 +384,33 @@ class FaceitVoiceSink(voice_recv.AudioSink):
             self.bot.loop
         )
 
+        def _done_callback(f):
+            try:
+                f.result()
+            except Exception as e:
+                print(f"[SINK] Error in transcription task: {e}")
+
+        future.add_done_callback(_done_callback)
+
     def cleanup(self):
+        print("[SINK] Cleanup called.")
         self.buffers.clear()
 
 
+# =========================
+# VOICE LISTENER
+# =========================
+
 def start_voice_listener(guild, vc):
+    print(f"[LISTENER] Trying to start listener in guild={guild.name}")
+
     if not hasattr(vc, "listen"):
-        print("Voice client does not support receiving audio.")
+        print("[LISTENER] Voice client does not support receiving audio.")
+        print("[LISTENER] This means the bot is not connected with VoiceRecvClient.")
         return
 
-    if vc.is_listening():
+    if hasattr(vc, "is_listening") and vc.is_listening():
+        print("[LISTENER] Voice listener already running.")
         return
 
     sink = FaceitVoiceSink(
@@ -350,10 +420,10 @@ def start_voice_listener(guild, vc):
 
     vc.listen(
         sink,
-        after=lambda e: print(f"Voice listener stopped: {e}") if e else None
+        after=lambda e: print(f"[LISTENER] Voice listener stopped: {e}") if e else print("[LISTENER] Voice listener stopped.")
     )
 
-    print("Voice listener started.")
+    print("[LISTENER] Voice listener started.")
 
 
 # =========================
@@ -395,39 +465,46 @@ class FaceitView(discord.ui.View):
 
 
 # =========================
-# READY
-# =========================
-
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-
-    # Persistent buttons
-    bot.add_view(FaceitView())
-
-
-# =========================
 # CONNECT TO VC
 # =========================
 
 async def ensure_voice_connected(guild):
+    print(f"[VOICE] ensure_voice_connected called for guild={guild.name}")
+
     voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
     text_channel = guild.get_channel(TEXT_CHANNEL_ID)
 
     if not voice_channel:
+        print(f"[VOICE] Voice channel not found: {VOICE_CHANNEL_ID}")
         return
+
+    print(f"[VOICE] Target voice channel found: {voice_channel.name}")
 
     existing_vc = guild.voice_client
 
-    # Already connected
+    # If already connected with normal discord.py VoiceClient,
+    # it cannot receive audio. Reconnect with VoiceRecvClient.
+    if existing_vc and not hasattr(existing_vc, "listen"):
+        print("[VOICE] Existing voice client cannot receive audio.")
+        print("[VOICE] Disconnecting and reconnecting with VoiceRecvClient...")
+
+        try:
+            await existing_vc.disconnect(force=True)
+        except Exception as e:
+            print(f"[VOICE] Force disconnect error: {e}")
+
+        voice_clients.pop(guild.id, None)
+        existing_vc = None
+
     if existing_vc:
-        # Move if wrong VC
+        print("[VOICE] Bot already connected to voice.")
+
         if existing_vc.channel.id != VOICE_CHANNEL_ID:
+            print("[VOICE] Moving bot to target voice channel...")
             await existing_vc.move_to(voice_channel)
 
         voice_clients[guild.id] = existing_vc
 
-        # Make sure listener is running
         start_voice_listener(
             guild,
             existing_vc
@@ -436,18 +513,21 @@ async def ensure_voice_connected(guild):
         return
 
     try:
+        print("[VOICE] Connecting with VoiceRecvClient...")
+
         vc = await voice_channel.connect(
             cls=voice_recv.VoiceRecvClient
         )
 
         voice_clients[guild.id] = vc
 
+        print("[VOICE] Connected to voice.")
+
         start_voice_listener(
             guild,
             vc
         )
 
-        # Send embed once per session
         if guild.id not in embed_sent and text_channel:
             embed = discord.Embed(
                 title="Faceit Queue",
@@ -466,11 +546,13 @@ async def ensure_voice_connected(guild):
 
             embed_sent.add(guild.id)
 
-    except discord.ClientException:
-        pass
+            print("[VOICE] Sent Faceit Queue embed.")
+
+    except discord.ClientException as e:
+        print(f"[VOICE] Discord client voice error: {e}")
 
     except Exception as e:
-        print(f"Voice connect error: {e}")
+        print(f"[VOICE] Voice connect error: {e}")
 
 
 # =========================
@@ -478,9 +560,12 @@ async def ensure_voice_connected(guild):
 # =========================
 
 async def disconnect_if_empty(guild):
+    print(f"[VOICE] disconnect_if_empty called for guild={guild.name}")
+
     voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
 
     if not voice_channel:
+        print("[VOICE] Voice channel not found during disconnect check.")
         return
 
     real_members = [
@@ -488,26 +573,65 @@ async def disconnect_if_empty(guild):
         if not member.bot
     ]
 
-    # Disconnect only if empty
+    print(f"[VOICE] Real members in VC: {len(real_members)}")
+
     if len(real_members) == 0:
         vc = guild.voice_client
 
         if vc and vc.is_connected():
             try:
                 if hasattr(vc, "is_listening") and vc.is_listening():
+                    print("[VOICE] Stopping voice listener...")
                     vc.stop_listening()
 
                 await vc.disconnect()
 
-                # Allow new embed next time
                 embed_sent.discard(guild.id)
 
-                print("Disconnected because VC is empty.")
+                print("[VOICE] Disconnected because VC is empty.")
 
             except Exception as e:
-                print(f"Disconnect error: {e}")
+                print(f"[VOICE] Disconnect error: {e}")
 
             voice_clients.pop(guild.id, None)
+
+
+# =========================
+# READY
+# =========================
+
+@bot.event
+async def on_ready():
+    print(f"[READY] Logged in as {bot.user}")
+    print(f"[READY] Guild count: {len(bot.guilds)}")
+
+    bot.add_view(FaceitView())
+
+    # Important:
+    # If Railway restarts while people are already in the VC,
+    # on_voice_state_update will not fire.
+    # This checks the VC on startup and connects if real users are already there.
+    for guild in bot.guilds:
+        voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
+
+        if not voice_channel:
+            print(f"[READY] Target VC not found in guild={guild.name}")
+            continue
+
+        real_members = [
+            member for member in voice_channel.members
+            if not member.bot
+        ]
+
+        print(
+            f"[READY] Guild={guild.name}, "
+            f"target VC={voice_channel.name}, "
+            f"real members={len(real_members)}"
+        )
+
+        if len(real_members) > 0:
+            print("[READY] Real users already in VC. Connecting listener...")
+            await ensure_voice_connected(guild)
 
 
 # =========================
@@ -516,23 +640,35 @@ async def disconnect_if_empty(guild):
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    # Ignore bots
     if member.bot:
         return
 
     guild = member.guild
 
+    before_id = before.channel.id if before.channel else None
+    after_id = after.channel.id if after.channel else None
+
+    print(
+        f"[VOICE_STATE] member={member} | "
+        f"before={before_id} | after={after_id}"
+    )
+
     # User joined target VC
     if after.channel and after.channel.id == VOICE_CHANNEL_ID:
+        print("[VOICE_STATE] User joined target VC.")
         await ensure_voice_connected(guild)
 
     # User left target VC
     if before.channel and before.channel.id == VOICE_CHANNEL_ID:
+        print("[VOICE_STATE] User left target VC.")
         await disconnect_if_empty(guild)
 
 
 # =========================
 # START
 # =========================
+
+if not TOKEN:
+    raise RuntimeError("TOKEN environment variable is missing.")
 
 bot.run(TOKEN)
