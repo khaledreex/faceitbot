@@ -413,7 +413,6 @@ def start_voice_listener(guild, vc):
 
     if not hasattr(vc, "listen"):
         print("[LISTENER] Voice client does not support receiving audio.")
-        print("[LISTENER] This means the bot is not connected with VoiceRecvClient.")
         return
 
     if hasattr(vc, "is_listening") and vc.is_listening():
@@ -422,9 +421,30 @@ def start_voice_listener(guild, vc):
 
     sink = FaceitVoiceSink(bot, guild.id)
 
+    def after_listener(error):
+        print(f"[LISTENER] Voice listener stopped: {error}")
+
+        if error:
+            print("[LISTENER] Restarting listener after error...")
+
+            async def restart():
+                await asyncio.sleep(2)
+
+                current_vc = guild.voice_client
+
+                if current_vc and current_vc.is_connected():
+                    start_voice_listener(guild, current_vc)
+                else:
+                    await ensure_voice_connected(guild)
+
+            asyncio.run_coroutine_threadsafe(
+                restart(),
+                bot.loop
+            )
+
     vc.listen(
         sink,
-        after=lambda e: print(f"[LISTENER] Voice listener stopped: {e}") if e else print("[LISTENER] Voice listener stopped.")
+        after=after_listener
     )
 
     print("[LISTENER] Voice listener started.")
