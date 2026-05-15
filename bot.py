@@ -1,17 +1,15 @@
 import discord
 import os
 from discord.ext import commands
-from discord import app_commands
-
 
 TOKEN = os.getenv("TOKEN")
+
 
 VOICE_CHANNEL_ID = 1434700693175931020
 TEXT_CHANNEL_ID = 384391311941435396
 
 TARGET_PLAYERS = 5
 ROLE_NAME = "faceit"
-
 
 # =========================
 # INTENTS
@@ -26,55 +24,11 @@ bot = commands.Bot(
     intents=intents
 )
 
-
 # Store voice clients
 voice_clients = {}
 
 # Prevent duplicate embeds
 embed_sent = set()
-
-
-# =========================
-# FACEIT MESSAGE LOGIC
-# =========================
-
-async def send_faceit_message(guild, needed=None):
-    voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
-    text_channel = guild.get_channel(TEXT_CHANNEL_ID)
-
-    if not voice_channel or not text_channel:
-        return False, "Channels not found."
-
-    # Button mode calculates from VC count
-    if needed is None:
-        real_members = [
-            member for member in voice_channel.members
-            if not member.bot
-        ]
-
-        current_count = len(real_members)
-        needed = TARGET_PLAYERS - current_count
-
-    # Slash command mode trusts the number entered
-    if needed <= 0:
-        return False, "5 stack is already full."
-
-    if needed > TARGET_PLAYERS:
-        return False, f"Need must be between 1 and {TARGET_PLAYERS}."
-
-    role = discord.utils.find(
-        lambda r: r.name.lower() == ROLE_NAME.lower(),
-        guild.roles
-    )
-
-    message = f"{role.mention if role else '@faceit'} need {needed} more player(s)"
-
-    await text_channel.send(
-        message,
-        allowed_mentions=discord.AllowedMentions(roles=True)
-    )
-
-    return True, message
 
 
 # =========================
@@ -96,56 +50,47 @@ class FaceitView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
-        await interaction.response.defer(ephemeral=True)
 
-        sent, result = await send_faceit_message(
-            interaction.guild,
-            needed=None
-        )
+        guild = interaction.guild
 
-        if sent:
-            await interaction.followup.send(
-                "Sent Faceit invite message.",
+        voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
+        text_channel = guild.get_channel(TEXT_CHANNEL_ID)
+
+        if not voice_channel or not text_channel:
+            await interaction.response.send_message(
+                "Channels not found.",
                 ephemeral=True
             )
-        else:
-            await interaction.followup.send(
-                result,
+            return
+
+        # Ignore bots
+        real_members = [
+            member for member in voice_channel.members
+            if not member.bot
+        ]
+
+        current_count = len(real_members)
+        needed = TARGET_PLAYERS - current_count
+
+        if needed <= 0:
+            await interaction.response.send_message(
+                "5 stack is already full.",
                 ephemeral=True
             )
+            return
 
-
-# =========================
-# SLASH COMMAND
-# =========================
-
-@bot.tree.command(
-    name="faceit",
-    description="Send a Faceit invite message"
-)
-@app_commands.describe(
-    need="How many players you need, from 1 to 5"
-)
-async def faceit_command(
-    interaction: discord.Interaction,
-    need: app_commands.Range[int, 1, 5]
-):
-    await interaction.response.defer(ephemeral=True)
-
-    sent, result = await send_faceit_message(
-        interaction.guild,
-        needed=need
-    )
-
-    if sent:
-        await interaction.followup.send(
-            f"Sent: need {need} more.",
-            ephemeral=True
+        role = discord.utils.find(
+            lambda r: r.name.lower() == ROLE_NAME.lower(),
+            guild.roles
         )
-    else:
-        await interaction.followup.send(
-            result,
-            ephemeral=True
+
+        message = f"{role.mention if role else '@faceit'} need {needed} more player(s)"
+
+        # await interaction.response.send_message("Done", ephemeral=True)
+
+        await text_channel.send(
+            message,
+            allowed_mentions=discord.AllowedMentions(roles=True)
         )
 
 
@@ -155,15 +100,11 @@ async def faceit_command(
 
 @bot.event
 async def on_ready():
+
     print(f"Logged in as {bot.user}")
 
+    # Persistent buttons
     bot.add_view(FaceitView())
-
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash command(s).")
-    except Exception as e:
-        print(f"Slash command sync error: {e}")
 
 
 # =========================
@@ -171,6 +112,7 @@ async def on_ready():
 # =========================
 
 async def ensure_voice_connected(guild):
+
     voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
     text_channel = guild.get_channel(TEXT_CHANNEL_ID)
 
@@ -179,7 +121,10 @@ async def ensure_voice_connected(guild):
 
     existing_vc = guild.voice_client
 
+    # Already connected
     if existing_vc:
+
+        # Move if wrong VC
         if existing_vc.channel.id != VOICE_CHANNEL_ID:
             await existing_vc.move_to(voice_channel)
 
@@ -187,16 +132,17 @@ async def ensure_voice_connected(guild):
         return
 
     try:
+
         vc = await voice_channel.connect()
+
         voice_clients[guild.id] = vc
 
+        # Send embed once per session
         if guild.id not in embed_sent and text_channel:
+
             embed = discord.Embed(
                 title="Faceit Queue",
-                description=(
-                    "Click below to send Faceit invites.\n\n"
-                    "Or use `/faceit need:3`."
-                ),
+                description="Click below to send Faceit invites.",
                 color=0x57F287
             )
 
@@ -219,6 +165,7 @@ async def ensure_voice_connected(guild):
 # =========================
 
 async def disconnect_if_empty(guild):
+
     voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
 
     if not voice_channel:
@@ -229,13 +176,18 @@ async def disconnect_if_empty(guild):
         if not member.bot
     ]
 
+    # Disconnect only if empty
     if len(real_members) == 0:
+
         vc = guild.voice_client
 
         if vc and vc.is_connected():
+
             try:
+
                 await vc.disconnect()
 
+                # Allow new embed next time
                 embed_sent.discard(guild.id)
 
                 print("Disconnected because VC is empty.")
@@ -252,14 +204,18 @@ async def disconnect_if_empty(guild):
 
 @bot.event
 async def on_voice_state_update(member, before, after):
+
+    # Ignore bots
     if member.bot:
         return
 
     guild = member.guild
 
+    # User joined target VC
     if after.channel and after.channel.id == VOICE_CHANNEL_ID:
         await ensure_voice_connected(guild)
 
+    # User left target VC
     if before.channel and before.channel.id == VOICE_CHANNEL_ID:
         await disconnect_if_empty(guild)
 
@@ -267,8 +223,5 @@ async def on_voice_state_update(member, before, after):
 # =========================
 # START
 # =========================
-
-if not TOKEN:
-    raise RuntimeError("TOKEN environment variable is missing.")
 
 bot.run(TOKEN)
