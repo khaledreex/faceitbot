@@ -4,6 +4,7 @@ from discord.ext import commands
 
 TOKEN = os.getenv("TOKEN")
 
+
 VOICE_CHANNEL_ID = 1434700693175931020
 TEXT_CHANNEL_ID = 384391311941435396
 
@@ -28,9 +29,6 @@ voice_clients = {}
 
 # Prevent duplicate embeds
 embed_sent = set()
-
-# Store queue embed message IDs so we can delete them later
-queue_messages = {}
 
 
 # =========================
@@ -88,10 +86,7 @@ class FaceitView(discord.ui.View):
 
         message = f"{role.mention if role else '@faceit'} need {needed} more player(s)"
 
-        await interaction.response.send_message(
-            "Invite sent.",
-            ephemeral=True
-        )
+        # await interaction.response.send_message("Done", ephemeral=True)
 
         await text_channel.send(
             message,
@@ -151,12 +146,11 @@ async def ensure_voice_connected(guild):
                 color=0x57F287
             )
 
-            msg = await text_channel.send(
+            await text_channel.send(
                 embed=embed,
                 view=FaceitView()
             )
 
-            queue_messages[guild.id] = msg.id
             embed_sent.add(guild.id)
 
     except discord.ClientException:
@@ -164,39 +158,6 @@ async def ensure_voice_connected(guild):
 
     except Exception as e:
         print(f"Voice connect error: {e}")
-
-
-# =========================
-# DELETE QUEUE EMBED
-# =========================
-
-async def delete_queue_embed(guild):
-
-    text_channel = guild.get_channel(TEXT_CHANNEL_ID)
-
-    if not text_channel:
-        return
-
-    message_id = queue_messages.get(guild.id)
-
-    if not message_id:
-        return
-
-    try:
-        msg = await text_channel.fetch_message(message_id)
-        await msg.delete()
-
-    except discord.NotFound:
-        pass
-
-    except discord.Forbidden:
-        print("Missing permissions to delete the queue embed.")
-
-    except Exception as e:
-        print(f"Embed delete error: {e}")
-
-    finally:
-        queue_messages.pop(guild.id, None)
 
 
 # =========================
@@ -225,9 +186,6 @@ async def disconnect_if_empty(guild):
             try:
 
                 await vc.disconnect()
-
-                # Delete queue embed after disconnecting
-                await delete_queue_embed(guild)
 
                 # Allow new embed next time
                 embed_sent.discard(guild.id)
