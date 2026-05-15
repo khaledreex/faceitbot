@@ -1,2 +1,4 @@
 discord.py[voice]
 PyNaCl
+discord-ext-voice-recv
+SpeechRecognition
